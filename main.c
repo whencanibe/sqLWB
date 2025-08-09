@@ -84,6 +84,31 @@ typedef struct
   uint32_t num_rows;
 } Table;
 
+typedef struct
+{
+  Table *table;
+  uint32_t row_num;
+  bool end_of_table; // Indicates a position one past the last element
+} Cursor;
+
+Cursor *table_start(Table *table)
+{
+  Cursor *cursor = malloc(sizeof(Cursor));
+  cursor->table = table;
+  cursor->row_num = 0;
+  cursor->end_of_table = (table->num_rows == 0);
+  return cursor;
+}
+
+Cursor *table_end(Table *table)
+{
+  Cursor *cursor = malloc(sizeof(Cursor));
+  cursor->table = table;
+  cursor->row_num = table->num_rows;
+  cursor->end_of_table = true;
+  return cursor;
+}
+
 void print_row(Row *row)
 {
   printf("(%d, %s, %s)\n", row->id, row->username, row->email);
@@ -92,8 +117,8 @@ void print_row(Row *row)
 void serialize_row(Row *source, void *destination)
 {
   memcpy(destination + ID_OFFSET, &(source->id), ID_SIZE);
-  //memcpy(destination + USERNAME_OFFSET, &(source->username), USERNAME_SIZE);
-  //memcpy(destination + EMAIL_OFFSET, &(source->email), EMAIL_SIZE);
+  // memcpy(destination + USERNAME_OFFSET, &(source->username), USERNAME_SIZE);
+  // memcpy(destination + EMAIL_OFFSET, &(source->email), EMAIL_SIZE);
 
   // To ensure that all bytes are initialized
   strncpy(destination + USERNAME_OFFSET, source->username, USERNAME_SIZE);
@@ -107,8 +132,8 @@ void deserialize_row(void *source, Row *destination)
   memcpy(&(destination->email), source + EMAIL_OFFSET, EMAIL_SIZE);
 }
 
-//for handling a cache miss
-void* get_page(Pager *pager, uint32_t page_num)
+// for handling a cache miss
+void *get_page(Pager *pager, uint32_t page_num)
 {
   if (page_num > TABLE_MAX_PAGES)
   {
@@ -129,11 +154,13 @@ void* get_page(Pager *pager, uint32_t page_num)
       num_pages += 1;
     }
 
-    if (page_num <= num_pages) {
+    if (page_num <= num_pages)
+    {
       // Read the page from the file
       lseek(pager->file_descriptor, page_num * PAGE_SIZE, SEEK_SET);
       ssize_t bytes_read = read(pager->file_descriptor, page, PAGE_SIZE);
-      if (bytes_read == -1){
+      if (bytes_read == -1)
+      {
         printf("Error reading file: %d\n", errno);
         exit(EXIT_FAILURE);
       }
@@ -145,24 +172,37 @@ void* get_page(Pager *pager, uint32_t page_num)
   return pager->pages[page_num];
 }
 
-void *row_slot(Table *table, uint32_t row_num)
+void *cursor_value(Cursor *cursor)
 {
+  uint32_t row_num = cursor->row_num;
   uint32_t page_num = row_num / ROWS_PER_PAGE;
-  void *page = get_page(table->pager, page_num);
+  void *page = get_page(cursor->table->pager, page_num);
   uint32_t row_offset = row_num % ROWS_PER_PAGE;
   uint32_t byte_offset = row_offset * ROW_SIZE;
   return page + byte_offset;
 }
 
-void pager_flush(Pager* pager, uint32_t page_num, uint32_t size) {
-  if (pager->pages[page_num] == NULL) {
+void cursor_advance(Cursor *cursor)
+{
+  cursor->row_num += 1;
+  if (cursor->row_num >= cursor->table->num_rows)
+  {
+    cursor->end_of_table = true;
+  }
+}
+
+void pager_flush(Pager *pager, uint32_t page_num, uint32_t size)
+{
+  if (pager->pages[page_num] == NULL)
+  {
     printf("Tried to flush null page\n");
     exit(EXIT_FAILURE);
   }
 
   off_t offset = lseek(pager->file_descriptor, page_num * PAGE_SIZE, SEEK_SET);
 
-  if (offset == -1) {
+  if (offset == -1)
+  {
     printf("Error seeking: %d\n", errno);
     exit(EXIT_FAILURE);
   }
@@ -170,7 +210,8 @@ void pager_flush(Pager* pager, uint32_t page_num, uint32_t size) {
   ssize_t bytes_written =
       write(pager->file_descriptor, pager->pages[page_num], size);
 
-  if (bytes_written == -1) {
+  if (bytes_written == -1)
+  {
     printf("Error writing: %d\n", errno);
     exit(EXIT_FAILURE);
   }
@@ -181,8 +222,10 @@ void db_close(Table *table)
   Pager *pager = table->pager;
   uint32_t num_full_pages = table->num_rows / ROWS_PER_PAGE;
 
-  for (uint32_t i = 0 ; i < num_full_pages; i++) {
-    if (pager->pages[i] == NULL) {
+  for (uint32_t i = 0; i < num_full_pages; i++)
+  {
+    if (pager->pages[i] == NULL)
+    {
       continue;
     }
     pager_flush(pager, i, PAGE_SIZE);
@@ -192,9 +235,11 @@ void db_close(Table *table)
   // There may be a partial page to write to the end of the file
   // This should not be needed after we switch to a B-tree
   uint32_t num_additional_rows = table->num_rows % ROWS_PER_PAGE;
-  if (num_additional_rows > 0) {
+  if (num_additional_rows > 0)
+  {
     uint32_t page_num = num_full_pages;
-    if (pager->pages[page_num] != NULL) {
+    if (pager->pages[page_num] != NULL)
+    {
       pager_flush(pager, page_num, num_additional_rows * ROW_SIZE);
       free(pager->pages[page_num]);
       pager->pages[page_num] = NULL;
@@ -209,8 +254,8 @@ void db_close(Table *table)
   }
   for (uint32_t i = 0; i < TABLE_MAX_PAGES; i++)
   {
-    void* page = pager->pages[i];
-    if(page != NULL)
+    void *page = pager->pages[i];
+    if (page != NULL)
     {
       free(page);
       pager->pages[i] = NULL;
@@ -299,21 +344,30 @@ ExecuteResult execute_insert(Statement *statement, Table *table)
   }
 
   Row *row_to_insert = &(statement->row_to_insert);
+  Cursor *cursor = table_end(table);
 
-  serialize_row(row_to_insert, row_slot(table, table->num_rows));
+  serialize_row(row_to_insert, cursor_value(cursor));
   table->num_rows += 1;
+
+  free(cursor);
 
   return EXECUTE_SUCCESS;
 }
 
 ExecuteResult execute_select(Statement *statement, Table *table)
 {
+  Cursor *cursor = table_start(table);
+
   Row row;
-  for (uint32_t i = 0; i < table->num_rows; i++)
+  while (!(cursor->end_of_table))
   {
-    deserialize_row(row_slot(table, i), &row);
+    deserialize_row(cursor_value(cursor), &row);
     print_row(&row);
+    cursor_advance(cursor);
   }
+
+  free(cursor);
+
   return EXECUTE_SUCCESS;
 }
 
@@ -331,9 +385,9 @@ ExecuteResult execute_statement(Statement *statement, Table *table)
 Pager *pager_open(const char *filename)
 {
   int fd = open(filename,
-                O_RDWR |     // Read/Write Mode
-                    O_CREAT, // Create file if it does now exist
-                S_IWUSR | // User write permission
+                O_RDWR |      // Read/Write Mode
+                    O_CREAT,  // Create file if it does now exist
+                S_IWUSR |     // User write permission
                     S_IRUSR); // User read permission
 
   if (fd == -1)
@@ -407,7 +461,7 @@ int main(int argc, char const *argv[])
     exit(EXIT_FAILURE);
   }
 
-  char* filename = argv[1];
+  char *filename = argv[1];
   Table *table = db_open(filename);
 
   InputBuffer *input_buffer = new_input_buffer();
